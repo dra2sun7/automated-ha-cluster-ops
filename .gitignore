@@ -1,0 +1,11 @@
+# Terraform 관련 임시/상태 파일 무시
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+*.tfvars.json
+
+# OS 및 에디터 임시 파일 무시
+.DS_Store
+.idea/
+.vscode/
