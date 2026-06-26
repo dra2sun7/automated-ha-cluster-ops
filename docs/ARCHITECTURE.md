@@ -1,10 +1,12 @@
-# 🌐 Network Architecture: VPC 사설망 격리 및 라우팅 설계 백서
+# 🛡️ AWS VPC Network Isolation & Routing Architecture Whitepaper
 
-본 문서는 대용량 데이터 플랫폼 인프라의 가용성과 보안성을 확보하기 위해 **Terraform(IaC)**으로 구현한 가상 네트워크(VPC) 및 서브넷 격리 아키텍처의 설계 당위성과 세부 명세를 기록한 기술 백서입니다.
+본 문서는 대규모 보안 로그 수집 및 분석을 위해 구축된 가상 사설 데이터 센터(VPC)의 네트워크 토폴로지와 트래픽 흐름, 그리고 보안 통제 설계 당위성을 기술합니다.
 
 ---
 
-## 🏗️ 1. 네트워크 토폴로지 (Network Topology)
+## 1. 네트워크 설계 요약 (Network Topology Overview)
+
+본 인프라는 외부의 직접적인 공격 표면(Attack Surface)을 최소화하기 위해 **Public 구역(성문 역할)**과 **Private 구역(지하 벙커 역할)**을 물리적으로 격리하여 배치했습니다.
 
 ```mermaid
 graph TD
@@ -19,7 +21,7 @@ graph TD
     Internet((인터넷 세계<br>Internet)):::internetStyle
 
     %% AWS VPC 경계
-    subgraph VPC [🛡️ 최외곽 경계: 사설 가상 데이터 센터 VPC 10.0.0.0/16]
+    subgraph VPC [🛡️ 가상 사설 데이터 센터 VPC 10.0.0.0/16]
         IGW[🚪 정문: Internet Gateway]:::nodeStyle
         
         %% Public 서브넷 구역
@@ -29,11 +31,11 @@ graph TD
         
         %% Private 서브넷 구역
         subgraph PrivateSubnet [🔒 2번 성벽: Private 서브넷 10.0.2.0/24]
-            subgraph KafkaCluster [🗄️ 분산 버퍼 레이어]
+            subgraph KafkaCluster [🗄️ 보안 로그 분산 중계 레이어]
                 Kafka[Apache Kafka<br>Cluster 3 노드]:::nodeStyle
             end
             
-            subgraph ESCluster [💾 분산 검색 엔진 및 저장소]
+            subgraph ESCluster [💾 보안 데이터 수집/분석/적재 레이어]
                 ES[Elasticsearch<br>Cluster 3 노드]:::nodeStyle
             end
         end
@@ -59,53 +61,30 @@ graph TD
 
 ---
 
-## 🛡️ 2. 아키텍처 설계 의도 및 보안 당위성
+## 2. 서브넷 레이어별 상세 역할 정의 (Subnet Architecture)
 
-### ① 제로 트러스트(Zero Trust) 기반의 망 분리
-* **설계 목적**: 분산 저장소(Elasticsearch)와 메시지 큐(Kafka)는 기업의 중요 원본 데이터와 인프라 메타데이터를 담고 있으므로 외부 인터넷 환경에 노출될 경우 스캐닝 및 무차별 대입 공격의 타깃이 됩니다.
-* **구현 핵심**: 
-  * 외부와 소통하는 관문 구역인 **Public Subnet(`10.0.1.0/24`)**과 내부 격리 구역인 **Private Subnet(`10.0.2.0/24`)**을 물리적으로 분리했습니다.
-  * Private 서브넷은 외부 인터넷 정문(Internet Gateway)으로 향하는 이정표가 라우팅 테이블에 존재하지 않으므로, 외부 공격자가 직접 사설 IP 주소로 패킷을 주입하는 행위가 구조적으로 불가능합니다.
+### 🌐 ① Public Subnet (`10.0.1.0/24`)
+* **역할:** 사설망 전체를 보호하는 외곽 성벽이자 공식적인 유일한 진입로입니다.
+* **배치 자원:** 외부 관문용 문지기 서버인 `Bastion Host`가 배치됩니다.
+* **통신 규칙:** `Internet Gateway(IGW)`와 연결된 라우팅 테이블을 사용하여 외부 인터넷과 양방향 공인 통신이 가능합니다. 가상 머신 생성 시 자동으로 공인 IP(Public IP)를 부여받습니다.
 
-### ② 명확한 네트워크 컴포넌트 역할 정의
-* **VPC (`10.0.0.0/16`)**: AWS 공용 클라우드 환경 내에서 우리 인프라 자원만을 독점적으로 보호하는 거대한 논리적 사설 데이터 센터의 경계를 형성합니다.
-* **Public Subnet**: 외부 관리자가 내부 인프라에 안전하게 접근하기 위한 유일한 경유지인 **Bastion Host(문지기 서버)**가 상주하는 영역입니다. `map_public_ip_on_launch = true` 옵션을 통해 외부 통신용 공인 IP를 자동 제어합니다.
-* **Private Subnet**: 오직 내부 통신망 및 Bastion Host를 통한 내부 사설 라우팅으로만 접근 가능한 핵심 보안 구역입니다. **Kafka 브로커 3노드**와 **Elasticsearch 3노드**가 이 안전한 구역 내에서 상주하며 상호 통신을 수행합니다.
+### 🔒 ② Private Subnet (`10.0.2.0/24`)
+* **역할:** 철저하게 고립된 지하 벙커 구역으로, 비즈니스의 핵심 자산과 데이터 플랫폼이 상주합니다.
+* **배치 자원:** Self-Managed 형태의 **Apache Kafka Cluster (3 노드)** 및 **Elasticsearch Cluster (3 노드)** 뼈대가 배치됩니다.
+* **통신 규칙:** 공인 IP가 원천적으로 부여되지 않으며, 외부 인터넷에서 이 서브넷 영역의 사설 IP(`10.0.2.x`)로 직접 패킷을 던지는 것은 물리적으로 불가능합니다. 오직 Public Subnet을 경유한 사설 트래픽만 수용합니다.
 
 ---
 
-## 📊 3. 서브넷 및 주소 공간 할당 명세 (IP IPAM)
+## 3. 방화벽 전략 및 프로토콜 제어 명세 (Security Group Policy)
 
-Terraform 자원의 확장성을 고려하여 CIDR 대역을 사전에 체계적으로 분할 지정했습니다.
+본 인프라는 포트 수준의 정밀 제어를 위해 가상 방화벽 세트인 보안 그룹(Security Group)을 연쇄 바인딩(Chained)하여 운용합니다.
 
-| 서브넷 명칭 | 할당 CIDR 블록 | 가용 IP 개수 | 외부 인터넷 통신 여부 | 배치 자원 역할 |
+| 분류 | 보안 그룹명 | 인바운드 규칙 (Inbound) | 아웃바운드 규칙 (Outbound) | 엔지니어링 의도 |
 | :--- | :--- | :--- | :--- | :--- |
-| **VPC 기본 대역** | `10.0.0.0/16` | 65,536개 | 사설망 전체 경계 | 프로젝트 전용 가상 데이터 센터 |
-| **Public Subnet** | `10.0.1.0/24` | 251개 | **가능 (In/Outbound)** | Bastion Host, 외부 인프라 관문 계층 |
-| **Private Subnet** | `10.0.2.0/24` | 251개 | **불가 (내부 사설 통신만)** | Kafka Cluster, Elasticsearch Cluster |
+| **관문** | `bastion_sg` | • `Port 22 (SSH)` : `0.0.0.0/0` (전면 개방) | • `Protocol ALL (-1)` : `0.0.0.0/0` | 외부 관리자가 유일하게 진입할 수 있는 통로 개척 |
+| **벙커** | `cluster_sg` | • `Port 22 (SSH)` : `bastion_sg` (Chained)<br>• `Protocol ALL (-1)` : `self = true` | • `Protocol ALL (-1)` : `0.0.0.0/0` | 외부 진입을 차단하고, 내부 노드 간 대용량 데이터 셔틀 전면 허용 및 패키지 업데이트를 위한 아웃바운드 개방 |
 
----
-
-## ⚙️ 4. 관련 인프라 선언 코드 (Terraform Reference)
-
-본 아키텍처는 `terraform/main.tf` 파일의 선언적 코드를 통해 휴먼 에러 없이 동일한 규격으로 복제 및 제거가 가능합니다.
-
-```hcl
-# 가상 네트워크(VPC) 및 서브넷 핵심 선언부 예시
-
-resource "aws_vpc" "main" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_hostnames = true
-}
-
-resource "aws_subnet" "public" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
-  map_public_ip_on_launch = true
-}
-
-resource "aws_subnet" "private" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.2.0/24"
-}
-```
+### 💡 핵심 기술 요소: 프로토콜 `-1` (All Protocols) 지정 사유
+`cluster_sg`에서 내부 노드 간 통신(`self = true`)과 아웃바운드(`egress`)의 프로토콜을 `-1`로 선언한 이유는 다음과 같습니다.
+1. **분산 플랫폼의 다중 프로토콜 충족:** 분산 클러스터(Kafka, ES) 내부 노드 간의 상태 체크(Heartbeat)용 ICMP 핑 통신, UDP 메트릭 전송, TCP 데이터 동기화 등 다양한 프로토콜 요구사항을 방화벽 수준에서 유연하게 수용하기 위함입니다.
+2. **패키지 다운로드 무결성:** 서버 내부에서 리눅스 업데이트 및 오픈소스 패키지 의존성을 가져올 때 프로토콜 제한으로 인해 다운로드가 차단되는 병목 현상을 원천 방어합니다.
