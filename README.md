@@ -19,7 +19,7 @@
 본 인프라는 **제로 트러스트(Zero Trust) 망 분리 원칙**을 철저히 준수하여 설계되었습니다. 외부 인터넷과의 접점을 최소화하고 대용량 데이터 버퍼 및 검색 엔진을 안전하게 격리 구역에 배치했습니다.
 
 ### 🌐 네트워크 & 가상 방화벽 토폴로지
-*상세한 네트워크 설계 당위성은 [VPC 아키텍처 백서(docs/ARCHITECTURE_VPC.md)](docs/ARCHITECTURE_VPC.md)에서 확인할 수 있습니다.*
+*상세한 네트워크 설계 당위성은 [VPC 아키텍처 백서(docs/ARCHITECTURE.md)](docs/ARCHITECTURE.md)에서 확인할 수 있습니다.*
 
 ```mermaid
 graph TD
