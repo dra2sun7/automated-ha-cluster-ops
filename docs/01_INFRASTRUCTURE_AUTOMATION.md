@@ -95,7 +95,3 @@ node0 | SUCCESS => { "changed": false, "ping": "pong" }
 node1 | SUCCESS => { "changed": false, "ping": "pong" }
 node2 | SUCCESS => { "changed": false, "ping": "pong" }
 ```
-
-### 🎯 본 트러블슈팅의 교훈 (Key Takeaways)
-1. **블랙박스 추측 자제:** 에러 메시지의 단어 하나(`banner exchange`)를 통해 패킷이 도달한 지점을 정밀 타격하는 디버깅의 중요성을 학습했습니다.
-2. **느슨한 결합(Loose Coupling):** 서로 다른 오픈소스 도구(Terraform, Ansible)를 연동할 때는 각자의 역할 레벨에서 프로세스와 소켓 영역을 침범하지 않도록 설계하는 것이 아키텍처 무결성의 핵심임을 깨달았습니다.
