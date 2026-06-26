@@ -6,48 +6,55 @@
 
 ## 🏗️ 1. 네트워크 토폴로지 (Network Topology)
 
-```text
-==========================================================================================
-[AWS Cloud] - ap-northeast-2 (서울 리전)
-==========================================================================================
- 🛡️ 최외곽 경계: 사설 가상 데이터 센터 VPC (10.0.0.0/16)
- 
-       [인터넷 세계 (Internet)]
-                 │
-                 ▼ (공인 트래픽 진입)
-         ┌───────────────┐
-         │ 🚪 정문: IGW  │ (Internet Gateway)
-         └───────┬───────┘
-                 │
-                 ├───────────────────────────────────────┐
-                 ▼ (Public 라우팅 테이블 안내)            │
-  ===========================================            │
-  │ 🌐 1번 성벽: Public 서브넷 (10.0.1.0/24) │            │
-  │                                         │            │
-  │   ┌─────────────────────────────────┐   │            │
-  │   │  🖥️ 외부 관문용 서버 (Bastion)   │   │            │
-  │   │  - 외부 접속(SSH) 가능           │   │            │
-  │   │  - 자동으로 공인 IP 부여         │   │            │
-  │   └────────────────┬────────────────┘   │            │
-  =====================│=====================            │
-                       │                                 │
-                       │ (내부 사설망을 통한 SSH 경유)    │ (외부 인터넷 직접 통신 불가!)
-                       ▼                                 │
-  ===========================================            │
-  │ 🔒 2번 성벽: Private 서브넷 (10.0.2.0/24)│            │
-  │    (철저히 격리된 내부 지하 벙커 구역)     │            │
-  │                                         │            │
-  │   ┌─────────────────────────────────┐   │            │
-  │   │  🗄️ 분산 버퍼 레이어             │   │            │
-  │   │  - Apache Kafka Cluster (3 노드)│◀───────────────────┘ (차단!)
-  │   └─────────────────────────────────┘   │
-  │   ┌─────────────────────────────────┐   │
-  │   │  💾 분산 검색 엔진 및 저장소     │   │
-  │   │  - Elasticsearch Cluster(3 노드)│   │
-  │   └─────────────────────────────────┘   │
-  ===========================================
-  
-==========================================================================================
+```mermaid
+graph TD
+    %% 글로벌 스타일 정의
+    classDef vpcStyle fill:#f9f9f9,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5;
+    classDef publicStyle fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    classDef privateStyle fill:#efebe9,stroke:#5d4037,stroke-width:2px;
+    classDef nodeStyle fill:#fff,stroke:#333,stroke-width:1px;
+    classDef internetStyle fill:#fff3e0,stroke:#ffb74d,stroke-width:2px;
+
+    %% 외부 인터넷 세계
+    Internet((인터넷 세계<br>Internet)):::internetStyle
+
+    %% AWS VPC 경계
+    subgraph VPC [🛡️ 최외곽 경계: 사설 가상 데이터 센터 VPC 10.0.0.0/16]
+        IGW[🚪 정문: Internet Gateway]:::nodeStyle
+        
+        %% Public 서브넷 구역
+        subgraph PublicSubnet [🌐 1번 성벽: Public 서브넷 10.0.1.0/24]
+            Bastion[🖥️ 외부 관문용 서버<br>Bastion Host]:::nodeStyle
+        end
+        
+        %% Private 서브넷 구역
+        subgraph PrivateSubnet [🔒 2번 성벽: Private 서브넷 10.0.2.0/24]
+            subgraph KafkaCluster [🗄️ 분산 버퍼 레이어]
+                Kafka[Apache Kafka<br>Cluster 3 노드]:::nodeStyle
+            end
+            
+            subgraph ESCluster [💾 분산 검색 엔진 및 저장소]
+                ES[Elasticsearch<br>Cluster 3 노드]:::nodeStyle
+            end
+        end
+    end
+
+    %% 클래스 지정
+    class VPC vpcStyle;
+    class PublicSubnet publicStyle;
+    class PrivateSubnet privateStyle;
+
+    %% 트래픽 흐름 및 차단 관계 선언
+    Internet -->|공인 트래픽 진입| IGW
+    IGW -->|Public 라우팅 테이블 안내| Bastion
+    Bastion -->|내부 사설망 SSH 경유| Kafka
+    Bastion -->|내부 사설망 SSH 경유| ES
+    
+    %% 외부 차단선 표현
+    Internet -.->|X 직접 통신 불가 X| PrivateSubnet
+
+    %% 링크 스타일링 (차단선 빨간색 강조)
+    linkStyle 4 stroke:#e53935,stroke-width:2px,stroke-dasharray: 5 5;
 ```
 
 ---

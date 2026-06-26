@@ -62,3 +62,69 @@ resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public.id
   route_table_id = aws_route_table.public.id
 }
+
+# 7. 외부 관문(Public) 서브넷용 보안 그룹: 외부 접속(SSH) 포트 제어
+resource "aws_security_group" "bastion_sg" {
+  name        = "${var.environment}-bastion-sg"
+  description = "Allow SSH traffic to Bastion Host"
+  vpc_id      = aws_vpc.main.id
+
+  # 인바운드(Inbound): 외부에서 서버로 들어오는 트래픽 규칙
+  ingress {
+    description = "SSH from anywhere"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # 포트폴리오 환경을 위해 우선 전면 개방
+  }
+
+  # 아웃바운드(Outbound): 서버에서 외부 인터넷으로 나가는 트래픽 규칙
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1" # -1은 모든 프로토콜(TCP, UDP 등)을 허용함을 의미
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.environment}-bastion-sg"
+  }
+}
+
+# 8. 내부 벙커(Private) 클러스터용 보안 그룹: 내부 노드 간 상호 전면 개방 및 Bastion 경유 강제화
+resource "aws_security_group" "cluster_sg" {
+  name        = "${var.environment}-cluster-sg"
+  description = "Security group for Kafka and Elasticsearch internal traffic"
+  vpc_id      = aws_vpc.main.id
+
+  # [접근 제어] SSH(22번) 접속은 오직 7번 Bastion 보안 그룹을 가진 가상 머신을 통해서만 진입 가능
+  ingress {
+    description     = "SSH only from Bastion Host"
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = [aws_security_group.bastion_sg.id] # Bastion SG ID 연쇄 바인딩
+  }
+
+  # [플랫폼 내부 통신] 이 보안 그룹을 함께 나눠 가진 클러스터 노드끼리는 모든 포트 통신을 제한 없이 허용
+  ingress {
+    description = "Allow all traffic between cluster nodes"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    self        = true # 자기 자신(동일 보안 그룹 구성원)들 간의 통신 허용
+  }
+
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.environment}-cluster-sg"
+  }
+}
