@@ -128,3 +128,56 @@ resource "aws_security_group" "cluster_sg" {
     Name = "${var.environment}-cluster-sg"
   }
 }
+
+# 9. 외부 관문용 Bastion Host 가상 머신 생성 (Public 서브넷 배치)
+resource "aws_instance" "bastion" {
+  ami           = "ami-040c33c6a51fd5d96" # Ubuntu 22.04 LTS 서울 리전 최신 AMI ID
+  instance_type = var.instance_type       # variables.tf에 정의된 t2.micro 수혈
+  key_name      = aws_key_pair.cluster_key.key_name
+
+  subnet_id              = aws_subnet.public.id                  # 2번 Public 서브넷에 상주
+  vpc_security_group_ids = [aws_security_group.bastion_sg.id]     # 7번 방화벽 옷 장착
+
+  # 프리티어 기본 디스크 용량 설정 (최소화)
+  root_block_device {
+    volume_size = 8
+    volume_type = "gp3"
+  }
+
+  tags = {
+    Name = "${var.environment}-bastion"
+  }
+}
+
+# 10. 내부 격리 구역의 분산 클러스터용 기본 가상 머신 생성 (Private 서브넷 배치)
+resource "aws_instance" "cluster_nodes" {
+  count         = 3                       # 분산 환경 구성을 위해 총 3대의 서버를 동시에 생성
+  ami           = "ami-040c33c6a51fd5d96" # 동일한 Ubuntu 22.04 LTS 적용
+  instance_type = var.instance_type       # 프리티어 t2.micro 적용
+  key_name      = aws_key_pair.cluster_key.key_name
+
+  subnet_id              = aws_subnet.private.id                 # 3번 격리된 Private 서브넷에 상주
+  vpc_security_group_ids = [aws_security_group.cluster_sg.id]     # 8번 벙커 전용 방화벽 옷 장착
+
+  root_block_device {
+    volume_size = 8 # 8GB * 3대 = 24GB (프리티어 제한인 총 30GB 이내로 안전하게 통제)
+    volume_type = "gp3"
+  }
+
+  tags = {
+    # count.index(0, 1, 2)를 사용하여 서버 이름이 node-0, node-1, node-2로 자동 넘버링되게 설정
+    Name = "${var.environment}-node-${count.index}"
+  }
+}
+
+# 11. 가상 머신 접속용 SSH 공개키(자물쇠) 등록
+resource "aws_key_pair" "cluster_key" {
+  key_name   = "${var.environment}-key"
+  public_key = file("${path.module}/my-cluster-key.pub") # 방금 생성한 pub 파일 자동 로드
+}
+
+# 12. 배포 완료 후 외부에서 접속할 Bastion Host의 공인 IP 주소 출력
+output "bastion_public_ip" {
+  description = "The public IP address of the bastion host"
+  value       = aws_instance.bastion.public_ip
+}
