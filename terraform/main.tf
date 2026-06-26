@@ -149,6 +149,8 @@ resource "aws_instance" "bastion" {
   }
 }
 
+
+
 # 10. 내부 격리 구역의 분산 클러스터용 기본 가상 머신 생성 (Private 서브넷 배치)
 resource "aws_instance" "cluster_nodes" {
   count         = 3                       # 분산 환경 구성을 위해 총 3대의 서버를 동시에 생성
@@ -180,4 +182,23 @@ resource "aws_key_pair" "cluster_key" {
 output "bastion_public_ip" {
   description = "The public IP address of the bastion host"
   value       = aws_instance.bastion.public_ip
+}
+
+# 13. 모든 동적 IP(공인/사설)를 취합하여 하나의 완벽한 인벤토리 파일로 빌드
+resource "local_file" "ansible_inventory" {
+  filename = "${path.module}/../ansible/inventory.ini"
+  content  = <<EOT
+[kafka_nodes]
+node0 ansible_host=${aws_instance.cluster_nodes[0].private_ip}
+node1 ansible_host=${aws_instance.cluster_nodes[1].private_ip}
+node2 ansible_host=${aws_instance.cluster_nodes[2].private_ip}
+
+[kafka_nodes:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=../terraform/my-cluster-key
+ansible_python_interpreter=/usr/bin/python3
+
+# Bastion 공인 IP가 바뀔 때마다 테라폼이 이 프록시 터널링 명령어를 실시간으로 동적 조립합니다.
+ansible_ssh_common_args='-o ForwardAgent=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -i ../terraform/my-cluster-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${aws_instance.bastion.public_ip}"'
+EOT
 }

@@ -1,0 +1,60 @@
+---
+- name: "Phase 2: Kafka 분산 클러스터 구동을 위한 OS 커널 최적화 및 Java 17 일괄 설치"
+  hosts: kafka_nodes
+  become: yes  # 모든 명령어를 관리자(root) 권한으로 실행
+  gather_facts: yes
+
+  tasks:
+    # -------------------------------------------------------------
+    # [1] OS 패키지 매니저 업데이트 및 기본 툴 수혈
+    # -------------------------------------------------------------
+    - name: "우분투 apt 캐시 업데이트 및 필수 유틸리티 설치"
+      apt:
+        update_cache: yes
+        name:
+          - curl
+          - gnupg2
+          - htop
+        state: present
+
+    # -------------------------------------------------------------
+    # [2] 호스트 가상 머신에 Java 17(JVM) 엔진 직접 주입
+    # -------------------------------------------------------------
+    - name: "OpenJDK 17 Headless 버전 일괄 설치"
+      apt:
+        name: openjdk-17-jdk-headless
+        state: present
+
+    - name: "Java 설치 완료 여부 및 버전 검증 확인"
+      command: java -version
+      register: java_version_output
+      changed_when: false
+
+    - name: "설치된 Java 버전 로그 출력"
+      debug:
+        msg: "{{ java_version_output.stderr_lines[0] }}"
+
+    # -------------------------------------------------------------
+    # [3] 빅데이터 처리를 위한 리눅스 OS 파일 개수 제한(Ulimit) 확장
+    # -------------------------------------------------------------
+    - name: "대규모 소켓/파일 처리를 위한 OS 자원 제한(Limits) 설정값 주입"
+      pam_limits:
+        domain: ubuntu
+        limit_type: "{{ item.type }}"
+        limit_item: "{{ item.item }}"
+        value: "{{ item.value }}"
+      loop:
+        - { type: 'soft', item: 'nofile', value: '65536' }
+        - { type: 'hard', item: 'nofile', value: '65536' }
+        - { type: 'soft', item: 'nproc', value: '65536' }
+        - { type: 'hard', item: 'nproc', value: '65536' }
+
+    # -------------------------------------------------------------
+    # [4] 가상 메모리 및 가상 파일 시스템 커널 튜닝 (Sysctl)
+    # -------------------------------------------------------------
+    - name: "카프카 인덱싱 성능 극대화를 위한 가상 파일 시스템 메모리 맵(vm.max_map_count) 커널 최적화"
+      sysctl:
+        name: vm.max_map_count
+        value: '262144'
+        state: present
+        reload: yes
