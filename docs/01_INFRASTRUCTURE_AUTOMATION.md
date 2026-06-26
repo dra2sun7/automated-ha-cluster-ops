@@ -1,38 +1,71 @@
-# 📡 Phase 1: Zero-Touch Infrastructure Automation Pipeline
+# 📡 Phase 1: 테라폼-앤서블 연동망 구축 및 SSH 터널링 트러블슈팅 기술 백서
 
-본 문서는 Terraform(IaC)을 활용한 클라우드 가상 가상 사설망(VPC) 인프라 프로비저닝과 Ansible(CM) 구성 관리 엔진을 유기적으로 융합하여, 최초 배포부터 내부 은닉 노드 통신 검증까지 수동 개입률 0%를 달성한 무중단 파이프라인 구축 연대기를 기록합니다.
-
----
-
-## 🏗️ 1. 엔지니어링 아키텍처 도면 (Network Topology)
-
-본 프로젝트는 보안 무결성을 극대화하기 위해 관문 역할을 수행하는 Public Subnet의 Bastion Host와, 실제 분산 클러스터가 구동되는 격리된 Private Subnet 구조로 설계되었습니다.
-
-* **로컬 개발 호스트 (Local Ubuntu):** Ansible 사령관 엔진 및 Terraform 제어소 구동.
-* **중간 징검다리 (Bastion Host):** 외부 인터넷과 통하는 유일한 관문 (Public IP).
-* **내부 격리 노드 (Kafka Nodes 0, 1, 2):** 외부와 차단된 채 사설 IP만 보유 (Private Subnet).
+본 문서는 인프라 프로비저닝 도구(Terraform)와 구성 관리 엔진(Ansible)을 융합하는 과정에서 마주한 심각한 네트워크 통신 병목과 소켓 교착 문제를 엔지니어링 관점에서 어떻게 분석하고, 가설을 세워 해결했는지에 대한 논리적 여정을 기록합니다.
 
 ---
 
-## 🔌 2. 완전 자동화 파이프라인 핵심 설계 (Core Mechanics)
+## 🏗️ 1. 초기 아키텍처 목표 (Target Topology)
 
-학습 및 테스트 환경 특성상 인프라를 On-Demand로 파괴하고 재건축(`destroy` & `apply`)할 때마다 자원의 IP 주소가 동적으로 계속 변하는 병목이 존재했습니다. 본 파이프라인은 이를 **역할 기반 코드 생성 기법**으로 완벽히 해결했습니다.
+보안 무결성을 극대화하기 위해 외부 인터넷과 단절된 Private Subnet 내에 3대의 격리 노드(`node0, 1, 2`)를 배치하고, 오직 Public Subnet의 Bastion Host를 통해서만 내부로 진입할 수 있는 안전한 징검다리 프록시 구조를 설계했습니다.
 
-### 🔹 1단계: 테라폼의 동적 자산 수집 및 인벤토리 실시간 빌드
-테라폼 컴파일 완료 직후, AWS로부터 갓 발급된 Bastion의 최신 공인 IP와 내부 노드 3대의 사설 IP를 실시간으로 가로채어 Ansible의 `inventory.ini` 파일을 100% 코드로 자동 작성(Overwrite)합니다.
 
-### 🔹 2단계: 에이전트 포워딩을 이용한 프록시 터널링 통합
-Ansible의 `ansible_ssh_common_args` 속성을 통해 로컬의 SSH 열쇠 권한을 Bastion Host에게 안전하게 인계(`ForwardAgent=yes`)하고, 징검다리 프록시 명령어(`ProxyCommand="ssh -W ..."`) 내부에서 호스트 키 검증을 우회하도록 설계하여 소켓 충돌을 예방했습니다.
 
 ---
 
-## 📝 3. 파이프라인 최종 자산 형상 (Configuration)
+## 🚨 2. 직면한 문제 (The Problem)
 
-### 📂 `terraform/main.tf` (동적 파일 생성 훅)
+인프라를 생성한 직후, 로컬 호스트에서 Ansible 사령관을 통해 내부 격리 노드들에게 통신 검증(`ansible -m ping`)을 시도했으나 아래와 같이 치명적인 연결 실패 에러가 발생하며 파이프라인이 완전히 붕괴되었습니다.
+
+```json
+[ERROR]: Task failed: Failed to connect to the host via ssh: Connection closed by UNKNOWN port 65535
+node0 | UNREACHABLE! => { "unreachable": true, "msg": "Connection timed out during banner exchange" }
+```
+
+---
+
+## 🔬 3. 원인 추적 및 디버깅 가설 (Hypothesis & Debugging)
+
+문제의 본질을 파헤치기 위해 에러 메시지를 단계별로 쪼개어 논리적 추론을 전개했습니다.
+
+### 💡 가설 1: Bastion Host의 성문 자체가 막혔는가?
+* **분석:** 만약 AWS 보안 그룹(Security Group)이나 IP 주소가 틀려 Bastion Host 자체에 도달하지 못했다면 `Connection refused`나 `Network is unreachable`이 떴어야 합니다.
+* **결론:** 그러나 에러는 `banner exchange(프로토콜 교환)` 단계에서 타임아웃이 났습니다. 즉, **Bastion Host의 안내 데스크(성문 안쪽)까지는 완벽하게 진입했으나 그 이후 단계에서 패킷이 갇혔음**을 의미합니다.
+
+### 💡 가설 2: 테라폼 프로비저너와 리눅스 SSH 소켓의 간섭 (근본 원인)
+기존 코드에서는 테라폼 배포 직후 호스트 키 등록을 자동화하기 위해 `local-exec`를 통해 아래 명령어를 실행하도록 설계했습니다.
+```bash
+ssh-keyscan -H ${self.public_ip} >> ~/.ssh/known_hosts
+```
+* **발견한 맹점:** `ssh-keyscan`은 단순히 텍스트만 긁어오는 것이 아니라, 대상 서버와 실제 임시 SSH 핸드셰이크를 맺습니다. 이 과정에서 발생한 비정상적인 세션 찌꺼기가 로컬 리눅스의 SSH 소켓 풀에 꼬인 채 남게 되었습니다.
+* 그 직후 Ansible이 `ProxyCommand` 터널을 타고 Bastion에 들어갔을 때, 꼬여있는 소켓 세션과 충돌을 일으키며 내부 노드로 패킷을 토스하지 못하고 문 앞에서 하염없이 서성이다가 `timed out during banner exchange`를 뿜은 것입니다.
+
+### 💡 가설 3: 동적 자산(사설 IP)의 현행화 누락
+인프라를 재구축(`destroy` 후 `apply`)할 때마다 Bastion의 공인 IP뿐만 아니라 내부 노드 3대의 사설 IP(`10.0.2.x`) 역시 계속해서 무작위로 변경되었습니다. 기존 구조에서는 `ansible/inventory.ini` 내의 사설 IP 주소들이 과거의 낡은 IP를 바라보고 있었기에 물리적인 도달 자체가 불가능한 상태였습니다.
+
+---
+
+## 🛠️ 4. 점진적 해결 과정 (Resolution Steps)
+
+범인을 좁혀낸 후, 수동 개입을 0%로 만들면서도 소켓 충돌을 원천 차단하는 구조로 아키텍처를 진화시켰습니다.
+
+### 1단계: 수동 제어권 검증 (`ssh-agent` 충전 및 포워딩 선언)
+Bastion Host가 내부 벙커 노드들의 문을 대신 열려면, 내 로컬 컴퓨터가 쥐고 있는 마스터 열쇠 권한을 위임받아야 합니다. `ssh-add -l` 명령어로 로컬 메모리에 키가 충전된 것을 확인한 뒤, `ansible.cfg`에 `ForwardAgent=yes` 속성을 부여하여 인증 권한이 중간 징검다리로 안전하게 인계되도록 조치했습니다.
+
+### 2단계: 소켓 간섭 원천 차단 및 테라폼-앤서블 결합도 해제
+소켓 꼬임의 주범이었던 테라폼 내의 `ssh-keyscan` 쉘 스크립트 라인을 과감히 제거했습니다. 대신 호스트 키 검증 우회 옵션(`StrictHostKeyChecking=no`)을 Ansible의 프록시 명령어 내부에 직접 주입하여 역할을 완벽히 격리했습니다.
+
+### 3단계: `local_file` 기반의 동적 인벤토리 단일화 빌드 (최종 진화)
+`sed` 명령어로 파일을 한 줄씩 치환하던 불안정한 방식을 버리고, 테라폼의 `local_file` 리소스를 도입했습니다. 테라폼이 AWS로부터 받아온 실시간 공인/사설 IP 전반을 가로채어 `inventory.ini` 파일을 통째로 새로 구워내도록 아키텍처를 통합했습니다.
+
+---
+
+## 📝 5. 최종 완성된 인프라 자산 형상 (Code)
+
+### 📂 `terraform/main.tf` (역할 기반 동적 파일 생성 훅)
 ```hcl
-# 모든 동적 IP(공인/사설)를 취합하여 하나의 완벽한 인벤토리 파일로 실시간 빌드
+# [최종형] 모든 동적 IP를 취합하여 단 하나의 완벽한 인벤토리 파일로 실시간 오버라이트
 resource "local_file" "ansible_inventory" {
-  filename = "$${path.module}/../ansible/inventory.ini"
+  filename = "${path.module}/../ansible/inventory.ini"
   content  = <<EOT
 [kafka_nodes]
 node0 ansible_host=${aws_instance.cluster_nodes[0].private_ip}
@@ -44,50 +77,25 @@ ansible_user=ubuntu
 ansible_ssh_private_key_file=../terraform/my-cluster-key
 ansible_python_interpreter=/usr/bin/python3
 
+# 🔥 핵심 논리: 에이전트 포워딩 및 프록시 터널링 제어권을 인벤토리 변수로 완벽히 이관
 ansible_ssh_common_args='-o ForwardAgent=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -i ../terraform/my-cluster-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${aws_instance.bastion.public_ip}"'
 EOT
 }
 ```
 
-### 📂 `ansible/ansible.cfg` (기본형 박제)
-```ini
-[defaults]
-inventory = ./inventory.ini
-host_key_checking = False
-```
-
 ---
 
-## 🚀 4. 파이프라인 가동 및 통신 검증 결과 (Validation)
+## 🚀 6. 최종 검증 및 엔지니어링 성과 (Validation)
 
-인프라 완전 철거 후 재배포 단계부터 Ansible 핑 테스트까지 **단 한 번의 수동 개입(키보드 입력, 파일 수정) 없이** 무중단으로 통과한 최종 성공 텔레메트리입니다.
+인프라 전면 파괴한 후 재배포하는 극한의 상황에서도, 엔지니어의 키보드 조작이나 파일 수정이 전혀 없는 **'수동 개입률 0% (Zero-Touch)'** 상태에서 한 방에 통신망을 개척하는 데 성공했습니다.
 
-```bash
-# 1. 인프라 철거 후 재생성
-cd terraform/
-terraform destroy -auto-approve
-terraform apply -auto-approve
-
-# 2. 제어소 이동 후 무중단 교신 실행
-cd ../ansible/
-ansible kafka_nodes -m ping
-```
-
-### 📊 최종 성공 터미널 로그 출력 (Telemetry)
+### 📊 최종 성공 텔레메트리 (Ansible Ping)
 ```json
-node1 | SUCCESS => {
-    "changed": false,
-    "ping": "pong"
-}
-node0 | SUCCESS => {
-    "changed": false,
-    "ping": "pong"
-}
-node2 | SUCCESS => {
-    "changed": false,
-    "ping": "pong"
-}
+node0 | SUCCESS => { "changed": false, "ping": "pong" }
+node1 | SUCCESS => { "changed": false, "ping": "pong" }
+node2 | SUCCESS => { "changed": false, "ping": "pong" }
 ```
 
-### 🎯 기대 효과 및 결론
-본 설계를 통해 인프라 인스턴스의 생명주기가 변동되더라도 운영 오버헤드가 제로(0)에 수렴하는 확장성 높은 인프라 환경을 확보했습니다. 이를 바탕으로 인프라 스트레스 튜닝 및 애플리케이션(Kafka) 대규모 배포 아키텍처로 진격할 수 있는 안정적인 발판을 마련했습니다.
+### 🎯 본 트러블슈팅의 교훈 (Key Takeaways)
+1. **블랙박스 추측 자제:** 에러 메시지의 단어 하나(`banner exchange`)를 통해 패킷이 도달한 지점을 정밀 타격하는 디버깅의 중요성을 학습했습니다.
+2. **느슨한 결합(Loose Coupling):** 서로 다른 오픈소스 도구(Terraform, Ansible)를 연동할 때는 각자의 역할 레벨에서 프로세스와 소켓 영역을 침범하지 않도록 설계하는 것이 아키텍처 무결성의 핵심임을 깨달았습니다.
