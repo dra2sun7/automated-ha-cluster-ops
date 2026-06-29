@@ -78,6 +78,15 @@ resource "aws_security_group" "bastion_sg" {
     cidr_blocks = ["0.0.0.0/0"] # 포트폴리오 환경을 위해 우선 전면 개방
   }
 
+  # 내부 격리 노드들이 Bastion 프록시(Squid)를 이용할 수 있도록 3128 포트 개방
+  ingress {
+    description = "Allow proxy traffic from internal VPC nodes"
+    from_port   = 3128
+    to_port     = 3128
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.main.cidr_block] # 내 VPC 내부망(10.0.0.0/16) 트래픽만 안전하게 허용
+  }
+
   # 아웃바운드(Outbound): 서버에서 외부 인터넷으로 나가는 트래픽 규칙
   egress {
     description = "Allow all outbound traffic"
@@ -197,6 +206,9 @@ node2 ansible_host=${aws_instance.cluster_nodes[2].private_ip}
 ansible_user=ubuntu
 ansible_ssh_private_key_file=../terraform/my-cluster-key
 ansible_python_interpreter=/usr/bin/python3
+
+# 테라폼이 AWS로부터 실시간으로 낚아챈 Bastion 사설 IP를 인벤토리 변수로 전달합니다.
+bastion_private_ip=${aws_instance.bastion.private_ip}
 
 # Bastion 공인 IP가 바뀔 때마다 테라폼이 이 프록시 터널링 명령어를 실시간으로 동적 조립합니다.
 ansible_ssh_common_args='-o ForwardAgent=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -i ../terraform/my-cluster-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${aws_instance.bastion.public_ip}"'
