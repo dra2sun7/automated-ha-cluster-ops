@@ -24,7 +24,8 @@
 
 우리가 3대의 격리 노드(`node0, 1, 2`)에 구축할 KRaft 클러스터의 물리적/논리적 구조입니다.
 
-```graph TB
+```mermaid
+graph TB
     subgraph VPC ["AWS VPC - 격리 구역 (Private Subnet)"]
         direction LR
         
