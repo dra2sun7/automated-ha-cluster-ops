@@ -24,4 +24,7 @@
 .idea/
 .vscode/
 *.swp
-ansible/kafka_2.13-3.7.0.tgz
+# 모든 tar 및 tgz 압축 파일 제외
+*.tar
+*.tgz
+*.tar.gz
