@@ -1,0 +1,67 @@
+---
+- name: "Phase 3: Apache Kafka & Zookeeper 분산 클러스터 일괄 배포 및 고가용성 연동 (로컬 파일 배달 방식)"
+  hosts: kafka_nodes
+  become: yes
+  gather_facts: yes
+
+  vars:
+    kafka_version: "3.7.0"
+    scala_version: "2.13"
+    kafka_tarball: "kafka_{{ scala_version }}-{{ kafka_version }}.tgz"
+    kafka_install_dir: "/opt/kafka"
+    kafka_data_dir: "/var/lib/kafka-data"
+    zookeeper_data_dir: "/var/lib/zookeeper"
+
+  tasks:
+    # -------------------------------------------------------------
+    # [1] Kafka 전용 시스템 계정 및 디렉토리 생성
+    # -------------------------------------------------------------
+    - name: "Kafka 전용 시스템 그룹 및 유저 생성"
+      user:
+        name: kafka
+        shell: /usr/sbin/nologin
+        system: yes
+        state: present
+
+    - name: "데이터 및 설치 디렉토리 선행 생성"
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: kafka
+        group: kafka
+        mode: '0755'
+      loop:
+        - "{{ kafka_install_dir }}"
+        - "{{ kafka_data_dir }}"
+        - "{{ zookeeper_data_dir }}"
+
+    # -------------------------------------------------------------
+    # [2] 로컬 PC의 바이너리를 Bastion 터널을 통해 각 노드로 고속 복사
+    # -------------------------------------------------------------
+    - name: "로컬 PC에 미리 받아둔 Kafka 타르볼 파일을 격리 노드로 고속 복사"
+      ansible.builtin.copy:
+        src: "./{{ kafka_tarball }}"   # 내 컴퓨터(앤서블 실행 위치)에 저장된 파일
+        dest: "/tmp/{{ kafka_tarball }}" # 원격 가상 머신의 임시 폴더 경로
+        owner: kafka
+        group: kafka
+        mode: '0644'
+
+    - name: "다운로드한 바이너리 압축 해제 및 디렉토리 배치"
+      unarchive:
+        src: "/tmp/{{ kafka_tarball }}"
+        dest: "{{ kafka_install_dir }}"
+        remote_src: yes
+        extra_opts: [--strip-components=1]
+        owner: kafka
+        group: kafka
+
+    # -------------------------------------------------------------
+    # [3] 분산 코디네이터 Zookeeper 고유 식별자(myid) 생성
+    # -------------------------------------------------------------
+    - name: "앤서블 루프 인덱스를 활용한 노드별 Zookeeper myid 생성"
+      copy:
+        content: "{{ play_hosts.index(inventory_hostname) + 1 }}"
+        dest: "{{ zookeeper_data_dir }}/myid"
+        owner: kafka
+        group: kafka
+        mode: '0644'
